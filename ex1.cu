@@ -1,7 +1,38 @@
 #include "ex1.h"
 
+#define NUM_THREADS 256
+#define THREADS_PER_TILE_ROW (NUM_THREADS / TILE_WIDTH)
+#define PIXELS_PER_THREAD (TILE_WIDTH / THREADS_PER_TILE_ROW)
+
+//We know the arr is of size 2^k
+//We chose #threads = arr size = 256
 __device__ void prefix_sum(int arr[], int arr_size) {
-    return; // TODO
+    
+    int increment = 0;
+    int tid = threadIdx.x;
+    for(int stride = 1; stride <= arr_size/2; stride *= 2){
+        if(tid >= stride){
+            increment = arr[tid] + arr[tid - stride];
+        }
+        __syncthreads();
+        if(tid >= stride){
+            arr[tid] = increment;
+        }
+        __syncthreads();
+
+    }
+    return; 
+}
+
+__device__ void build_histogram(int hist[], uchar all_in[IMG_HEIGHT][IMG_WIDTH], 
+                                int tile_start_pixel_row, int tile_start_pixel_col){
+    int tid = threadIdx.x;
+    int thread_start_pixel_row = tile_start_pixel_row + tid / TILE_WIDTH;
+    int thread_start_pixel_col = tile_start_pixel_row + tid % TILE_WIDTH * PIXELS_PER_THREAD;
+    for(int i = 0; i < PIXELS_PER_THREAD; i++){
+        atomicAdd(&hist[all_in[thread_start_pixel_row][thread_start_pixel_col + i]], 1);
+    }
+
 }
 
 /**
@@ -15,8 +46,26 @@ __device__ void prefix_sum(int arr[], int arr_size) {
 __device__ 
 void interpolate_device(uchar* maps ,uchar *in_img, uchar* out_img);
 
+
 __global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps) {
-    // TODO
+    int hist[256];
+
+    int tile_row;
+    int tile_col;
+    int tile_start_pixel_row;
+    int tile_start_pixel_col;
+    
+    uchar tile[TILE_WIDTH][TILE_WIDTH];
+    for (int tile_idx = 0; tile_idx < TILE_COUNT*TILE_COUNT; tile_idx++){
+        tile_row = tile_idx / TILE_COUNT;
+        tile_col = tile_idx % TILE_COUNT;
+        tile_start_pixel_row = tile_row * TILE_WIDTH;
+        tile_start_pixel_col = tile_col * TILE_WIDTH;
+
+
+    }
+    
+    
     interpolate_device(maps, all_in, all_out);
     return; 
 }
