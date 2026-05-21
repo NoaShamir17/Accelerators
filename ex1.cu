@@ -59,7 +59,7 @@ void interpolate_device(uchar* maps ,uchar *in_img, uchar* out_img);
 
 
 __global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps) {
-    int hist[256];
+    __shared__ int hist[256]; //shared for atomic add
     int *CDF;
 
     int tile_row;
@@ -68,6 +68,10 @@ __global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps)
     int tile_start_pixel_col;
     
     for (int tile_idx = 0; tile_idx < TILE_COUNT*TILE_COUNT; tile_idx++){
+
+        hist[threadIdx.x] = 0;
+        __syncthreads();
+
         tile_row = tile_idx / TILE_COUNT;
         tile_col = tile_idx % TILE_COUNT;
         tile_start_pixel_row = tile_row * TILE_WIDTH;
