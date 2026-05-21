@@ -35,7 +35,7 @@ int main() {
     CUDA_CHECK( cudaGetDeviceCount(&devices) );
     printf("Number of devices: %d\n", devices);
 
-    int device_id = 2; // Change this according to the connection instructions (0, 1, 2, 3)
+    int device_id = 3; // Change this according to the connection instructions (0, 1, 2, 3)
     CUDA_CHECK( cudaSetDevice(device_id) );
     printf("Using device %d\n", device_id);
 

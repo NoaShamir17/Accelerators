@@ -1,8 +1,7 @@
 #include "ex1.h"
 
 #define NUM_THREADS 256
-#define THREADS_PER_TILE_ROW (NUM_THREADS / TILE_WIDTH)
-#define PIXELS_PER_THREAD (TILE_WIDTH / THREADS_PER_TILE_ROW)
+#define IMG_SIZE (IMG_HEIGHT * IMG_WIDTH)
 
 //We know the arr is of size 2^k
 //We chose #threads = arr size = 256
@@ -24,15 +23,27 @@ __device__ void prefix_sum(int arr[], int arr_size) {
     return; 
 }
 
+
+
 __device__ void build_histogram(int hist[], uchar all_in[IMG_HEIGHT][IMG_WIDTH], 
                                 int tile_start_pixel_row, int tile_start_pixel_col){
     int tid = threadIdx.x;
-    int thread_start_pixel_row = tile_start_pixel_row + tid / TILE_WIDTH;
-    int thread_start_pixel_col = tile_start_pixel_row + tid % TILE_WIDTH * PIXELS_PER_THREAD;
-    for(int i = 0; i < PIXELS_PER_THREAD; i++){
-        atomicAdd(&hist[all_in[thread_start_pixel_row][thread_start_pixel_col + i]], 1);
+    int row;
+    int col;
+    for(int stride = 0; stride < TILE_WIDTH * TILE_WIDTH; stride += NUM_THREADS){
+        row = tile_start_pixel_row + (tid + stride) / TILE_WIDTH;
+        col = tile_start_pixel_col + tid % TILE_WIDTH; //stride is a multiply of TILE_WIDTH bc NUM_THREADS = k * TILE_WIDTH
+        atomicAdd(&hist[all_in[row][col]], 1);
     }
 
+    __syncthreads();
+
+}
+
+__device__ void calc_m_v(uchar maps_3d_array[TILE_COUNT][TILE_COUNT][256], int *CDF, int tile_row, int tile_col){
+    int tid = threadIdx.x;
+    maps_3d_array[tile_row][tile_col][tid] = CDF[tid] * 255  /  (TILE_WIDTH * TILE_WIDTH);
+    __syncthreads();
 }
 
 /**
@@ -49,22 +60,26 @@ void interpolate_device(uchar* maps ,uchar *in_img, uchar* out_img);
 
 __global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps) {
     int hist[256];
+    int *CDF;
 
     int tile_row;
     int tile_col;
     int tile_start_pixel_row;
     int tile_start_pixel_col;
     
-    uchar tile[TILE_WIDTH][TILE_WIDTH];
     for (int tile_idx = 0; tile_idx < TILE_COUNT*TILE_COUNT; tile_idx++){
         tile_row = tile_idx / TILE_COUNT;
         tile_col = tile_idx % TILE_COUNT;
         tile_start_pixel_row = tile_row * TILE_WIDTH;
         tile_start_pixel_col = tile_col * TILE_WIDTH;
+        
+        build_histogram(hist, (uchar (*)[IMG_WIDTH])all_in, tile_start_pixel_row, tile_start_pixel_col);
+        CDF = hist;
+        prefix_sum(CDF, 256);
 
+        calc_m_v((uchar (*)[TILE_COUNT][256])maps, CDF, tile_row, tile_col);
 
     }
-    
     
     interpolate_device(maps, all_in, all_out);
     return; 
@@ -72,7 +87,9 @@ __global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps)
 
 /* Task serial context struct with necessary CPU / GPU pointers to process a single image */
 struct task_serial_context {
-    // TODO define task serial memory buffers
+    uchar *d_in_img;
+    uchar *d_out_img;
+    uchar *d_maps; 
 };
 
 /* Allocate GPU memory for a single input image and a single output image.
@@ -82,7 +99,9 @@ struct task_serial_context *task_serial_init()
 {
     auto context = new task_serial_context;
 
-    //TODO: allocate GPU memory for a single input image, a single output image, and maps
+    cudaMalloc((void**) &context->d_in_img, IMG_SIZE);
+    cudaMalloc((void**) &context->d_out_img, IMG_SIZE);
+    cudaMalloc((void**) &context->d_maps, TILE_COUNT * TILE_COUNT * 256);
 
     return context;
 }
@@ -91,16 +110,38 @@ struct task_serial_context *task_serial_init()
  * provided output host array */
 void task_serial_process(struct task_serial_context *context, uchar *images_in, uchar *images_out)
 {
-    //TODO: in a for loop:
-    //   1. copy the relevant image from images_in to the GPU memory you allocated
-    //   2. invoke GPU kernel on this image
-    //   3. copy output from GPU memory to relevant location in images_out_gpu_serial
+
+    for(int i = 0; i < N_IMAGES; i++){
+
+        // 1. copy the relevant image from images_in to the GPU memory you allocated
+        cudaMemcpy(context->d_in_img, images_in + i * IMG_SIZE, IMG_SIZE, cudaMemcpyHostToDevice);
+
+        // 2. invoke GPU kernel on this image
+        process_image_kernel<<<1, NUM_THREADS>>>(context->d_in_img, context->d_out_img, context->d_maps);
+
+        cudaDeviceSynchronize();
+
+        // 2.5. get error
+        cudaError_t error = cudaGetLastError();
+        if (error!=cudaSuccess){
+            fprintf(stderr, "Kernel execution failed:%s\n", cudaGetErrorString(error));
+            return;
+        }
+
+        // 3. copy output from GPU memory to relevant location in images_out_gpu_serial
+        cudaMemcpy(images_out + i * IMG_SIZE, context->d_out_img, IMG_SIZE, cudaMemcpyDeviceToHost);
+
+    }
+
 }
 
 /* Release allocated resources for the task-serial implementation. */
 void task_serial_free(struct task_serial_context *context)
 {
-    //TODO: free resources allocated in task_serial_init
+    //free resources allocated in task_serial_init
+    cudaFree(context->d_in_img);
+    cudaFree(context->d_out_img);
+    cudaFree(context->d_maps);
 
     free(context);
 }
