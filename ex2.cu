@@ -1,6 +1,7 @@
 #include "ex2.h"
 #include <cuda/atomic>
 
+#define NUM_THREADS 1024
 #define NUM_THREADS_PER_TILE 256
 #define IMG_SIZE (IMG_HEIGHT * IMG_WIDTH)
 
@@ -99,6 +100,15 @@ private:
     bool is_occupied[STREAM_COUNT];
     int img_id_array[STREAM_COUNT];
 
+    //context
+    uchar *in_img_array[STREAM_COUNT];
+    uchar *out_img_array[STREAM_COUNT];
+    uchar *maps_array[STREAM_COUNT];
+
+
+
+
+
 public:
     streams_server()
     {
@@ -108,7 +118,12 @@ public:
         for(int i = 0; i < STREAM_COUNT; i++){
             cudaStreamCreate(&streams[i]);
             is_occupied[i] = false;
+
+            CUDA_CHECK(cudaMalloc((void**) in_img_array[i], IMG_SIZE));
+            CUDA_CHECK(cudaMalloc((void**) out_img_array[i], IMG_SIZE));
+            CUDA_CHECK(cudaMalloc((void**) maps_array[i], TILE_COUNT * TILE_COUNT * 256));
         }
+
 
         
     }
@@ -118,17 +133,23 @@ public:
         // TODO free resources allocated in constructor
         for(int i = 0; i < STREAM_COUNT; i++){
             cudaStreamDestroy(&streams[i]);
+
+            CUDA_CHECK(cudaFree(in_img_array[i]));
+            CUDA_CHECK(cudaFree(out_img_array[i]));
+            CUDA_CHECK(cudaFree(maps_array[i]));
         }
     }
 
     bool enqueue(int img_id, uchar *img_in, uchar *img_out) override
     {
         // TODO place memory transfers and kernel invocation in streams if possible.
-        for(int i = 0; i < STREAM_COUNT; i++){
-            if(is_occupied[i] == false){
-                cudaMemcpyAsync()
-                is_occupied[i] = true;
-                img_id_array[i] = img_id;
+        for(int stream = 0; stream < STREAM_COUNT; stream++){
+            if(is_occupied[stream] == false){
+
+                cudaMemcpyAsync(in_img_array[stream], img_in, IMG_SIZE, cudaMemcpyHostToDevice,streams[stream]);
+                process_image_kernel<<<1, NUM_THREADS,0,streams[stream]>>>(in_img_array[stream], out_img_array[stream], maps_array[stream]);
+                is_occupied[stream] = true;
+                img_id_array[stream] = img_id;
 
 
             }
@@ -139,11 +160,9 @@ public:
 
     bool dequeue(int *img_id) override
     {
-        return false;
-
         // TODO query (don't block) streams for any completed requests.
-        //for ()
-        //{
+        for ()
+        {
             cudaError_t status = cudaStreamQuery(0); // TODO query diffrent stream each iteration
             switch (status) {
             case cudaSuccess:
@@ -156,7 +175,7 @@ public:
                 CUDA_CHECK(status);
                 return false;
             }
-        //}
+        }
     }
 };
 
