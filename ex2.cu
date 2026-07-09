@@ -95,22 +95,45 @@ class streams_server : public image_processing_server
 private:
     // TODO define stream server context (memory buffers, streams, etc...)
 
+    cudaStream_t streams[STREAM_COUNT];
+    bool is_occupied[STREAM_COUNT];
+    int img_id_array[STREAM_COUNT];
+
 public:
     streams_server()
     {
         // TODO initialize context (memory buffers, streams, etc...)
         //initialize streams, allocate memory buffers, etc...
+
+        for(int i = 0; i < STREAM_COUNT; i++){
+            cudaStreamCreate(&streams[i]);
+            is_occupied[i] = false;
+        }
+
         
     }
 
     ~streams_server() override
     {
         // TODO free resources allocated in constructor
+        for(int i = 0; i < STREAM_COUNT; i++){
+            cudaStreamDestroy(&streams[i]);
+        }
     }
 
     bool enqueue(int img_id, uchar *img_in, uchar *img_out) override
     {
         // TODO place memory transfers and kernel invocation in streams if possible.
+        for(int i = 0; i < STREAM_COUNT; i++){
+            if(is_occupied[i] == false){
+                cudaMemcpyAsync()
+                is_occupied[i] = true;
+                img_id_array[i] = img_id;
+
+
+            }
+            
+        }
         return false;
     }
 
