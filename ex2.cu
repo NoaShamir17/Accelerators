@@ -81,7 +81,7 @@ void process_image(uchar *in, uchar *out, uchar* maps) {
 
     
     
-     interpolate_device(maps, in, out);
+    interpolate_device(maps, in, out);
     return; 
 }
 
@@ -99,6 +99,8 @@ public:
     streams_server()
     {
         // TODO initialize context (memory buffers, streams, etc...)
+        //initialize streams, allocate memory buffers, etc...
+        
     }
 
     ~streams_server() override
