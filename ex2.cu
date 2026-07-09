@@ -118,7 +118,7 @@ public:
         //initialize streams, allocate memory buffers, etc...
         next_checked_stream = 0;
         for(int i = 0; i < STREAM_COUNT; i++){
-            cudaStreamCreate(&streams[i]);
+            CUDA_CHECK(cudaStreamCreate(&streams[i]));
             is_occupied[i] = false;
 
             CUDA_CHECK(cudaMalloc((void**) in_img_array[i], IMG_SIZE));
@@ -134,7 +134,7 @@ public:
     {
         // TODO free resources allocated in constructor
         for(int i = 0; i < STREAM_COUNT; i++){
-            cudaStreamDestroy(streams[i]);
+            CUDA_CHECK(cudaStreamDestroy(streams[i]));
 
             CUDA_CHECK(cudaFree(in_img_array[i]));
             CUDA_CHECK(cudaFree(out_img_array[i]));
@@ -148,8 +148,10 @@ public:
         for(int stream = 0; stream < STREAM_COUNT; stream++){
             if(is_occupied[stream] == false){
 
-                cudaMemcpyAsync(in_img_array[stream], img_in, IMG_SIZE, cudaMemcpyHostToDevice,streams[stream]);
+                CUDA_CHECK(cudaMemcpyAsync(in_img_array[stream], img_in, IMG_SIZE, cudaMemcpyHostToDevice,streams[stream]));
+                CUDA_CHECK(cudaGetLastError());
                 process_image_kernel<<<1, NUM_THREADS,0,streams[stream]>>>(in_img_array[stream], out_img_array[stream], maps_array[stream]);
+                CUDA_CHECK(cudaGetLastError());
                 is_occupied[stream] = true;
                 img_id_array[stream] = img_id;
 
