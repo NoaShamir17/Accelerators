@@ -1,8 +1,50 @@
 #include "ex2.h"
 #include <cuda/atomic>
 
+#define NUM_THREADS_PER_TILE 256
+#define IMG_SIZE (IMG_HEIGHT * IMG_WIDTH)
+
 __device__ void prefix_sum(int arr[], int arr_size) {
     // TODO complete according to hw1
+    int increment = 0;
+    int in_tile_tid = threadIdx.x % NUM_THREADS_PER_TILE;
+    for(int stride = 1; stride <= arr_size/2; stride *= 2){
+        if(in_tile_tid >= stride){
+            increment = arr[in_tile_tid] + arr[in_tile_tid - stride];
+        }
+        __syncthreads();
+        if(in_tile_tid >= stride){
+            arr[in_tile_tid] = increment;
+        }
+        __syncthreads();
+
+    }
+    return; 
+}
+
+__device__ void build_histogram(int hist[], uchar all_in[IMG_HEIGHT][IMG_WIDTH], 
+                                int tile_start_pixel_row, int tile_start_pixel_col){
+    int in_tile_tid = threadIdx.x % NUM_THREADS_PER_TILE;
+
+    hist[in_tile_tid] = 0;
+    __syncthreads();
+
+    int row;
+    int col;
+    for(int stride = 0; stride < TILE_WIDTH * TILE_WIDTH; stride += NUM_THREADS_PER_TILE){
+        row = tile_start_pixel_row + (in_tile_tid + stride) / TILE_WIDTH;
+        col = tile_start_pixel_col + in_tile_tid % TILE_WIDTH; //stride is a multiply of TILE_WIDTH bc NUM_THREADS_PER_TILE = k * TILE_WIDTH
+        atomicAdd(&hist[all_in[row][col]], 1);
+    }
+
+    __syncthreads();
+
+}
+
+__device__ void calc_m_v(uchar maps_3d_array[TILE_COUNT][TILE_COUNT][256], int *CDF, int tile_row, int tile_col){
+    int in_tile_tid = threadIdx.x % NUM_THREADS_PER_TILE;
+    maps_3d_array[tile_row][tile_col][in_tile_tid] = CDF[in_tile_tid] * 255  /  (TILE_WIDTH * TILE_WIDTH);
+    __syncthreads();
 }
 
 /**
@@ -19,6 +61,28 @@ __device__
 __device__
 void process_image(uchar *in, uchar *out, uchar* maps) {
     // TODO complete according to hw1
+    __shared__ int hist[TILE_COUNT*TILE_COUNT][256]; //shared for atomic add
+    int *CDF;
+
+    // IMG_WIDTH=128 / TILE_WIDTH=64 - > 2 tiles per row, 2 tiles per column, 4 tiles in total
+    // 256 thread per tile, 4 tiles in total -> 1024 threads per block
+    int tile_idx = threadIdx.x / 256;
+
+    int tile_row = tile_idx / TILE_COUNT;
+    int tile_col = tile_idx % TILE_COUNT;
+    int tile_start_pixel_row = tile_row * TILE_WIDTH;
+    int tile_start_pixel_col = tile_col * TILE_WIDTH;
+    
+    build_histogram(hist[tile_idx], (uchar (*)[IMG_WIDTH])in, tile_start_pixel_row, tile_start_pixel_col);
+    CDF = hist[tile_idx];
+    prefix_sum(CDF, 256);
+
+    calc_m_v((uchar (*)[TILE_COUNT][256])maps, CDF, tile_row, tile_col);
+
+    
+    
+     interpolate_device(maps, in, out);
+    return; 
 }
 
 __global__
