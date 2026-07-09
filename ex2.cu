@@ -99,6 +99,7 @@ private:
     cudaStream_t streams[STREAM_COUNT];
     bool is_occupied[STREAM_COUNT];
     int img_id_array[STREAM_COUNT];
+    int next_checked_stream;
 
     //context
     uchar *in_img_array[STREAM_COUNT];
@@ -109,12 +110,13 @@ private:
 
 
 
+
 public:
     streams_server()
     {
         // TODO initialize context (memory buffers, streams, etc...)
         //initialize streams, allocate memory buffers, etc...
-
+        next_checked_stream = 0;
         for(int i = 0; i < STREAM_COUNT; i++){
             cudaStreamCreate(&streams[i]);
             is_occupied[i] = false;
@@ -132,7 +134,7 @@ public:
     {
         // TODO free resources allocated in constructor
         for(int i = 0; i < STREAM_COUNT; i++){
-            cudaStreamDestroy(&streams[i]);
+            cudaStreamDestroy(streams[i]);
 
             CUDA_CHECK(cudaFree(in_img_array[i]));
             CUDA_CHECK(cudaFree(out_img_array[i]));
@@ -161,18 +163,21 @@ public:
     bool dequeue(int *img_id) override
     {
         // TODO query (don't block) streams for any completed requests.
-        for ()
+        for (int i = 0; i < STREAM_COUNT; i++)
         {
-            cudaError_t status = cudaStreamQuery(0); // TODO query diffrent stream each iteration
+            cudaError_t status = cudaStreamQuery(streams[next_checked_stream]); // TODO query diffrent stream each iteration
             switch (status) {
             case cudaSuccess:
-                // TODO return the img_id of the request that was completed.
-                //*img_id = ...
+                *img_id = img_id_array[next_checked_stream];
+                is_occupied[next_checked_stream] = false;
+                next_checked_stream = (next_checked_stream + 1) % STREAM_COUNT;
                 return true;
             case cudaErrorNotReady:
-                return false;
+                next_checked_stream = (next_checked_stream + 1) % STREAM_COUNT;
+                continue;
             default:
                 CUDA_CHECK(status);
+                next_checked_stream = (next_checked_stream + 1) % STREAM_COUNT;
                 return false;
             }
         }
