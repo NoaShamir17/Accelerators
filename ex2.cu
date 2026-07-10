@@ -197,18 +197,74 @@ std::unique_ptr<image_processing_server> create_streams_server()
     return std::make_unique<streams_server>();
 }
 
+
 // TODO implement a lock
+
+class TTAS_lock
+{
+private:
+    cuda::atomic<bool> lock;
+
+public:
+    __device__ void lock(){
+        while(true){
+
+            while(lock.load(cuda::memory_order_relaxed) == true);
+
+            if(lock.exchange(false,cuda::memory_order_acquire)==false){
+                return;
+            }
+        }
+    }
+
+    __device__ void unlock(){
+        lock.store(false, cuda::memory_order_release);
+    }
+};
+
 // TODO implement a MPMC queue
+
+
 // TODO implement the persistent kernel
 // TODO implement a function for calculating the threadblocks count
+int calculate_max_threadblocks(int threads_per_block, size_t shared_mem_per_block, int regs_per_thread) {
+    int device_id;
+    cudaGetDevice(&device_id);
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, device_id);
+    printf("Device: %s, SMs: %d, Max threads per SM: %d, Shared mem per SM: %zu, Regs per SM: %d\n", prop.name, prop.multiProcessorCount, prop.maxThreadsPerMultiProcessor, prop.sharedMemPerMultiprocessor, prop.regsPerMultiprocessor);
+
+    // 1. Thread Limit
+    int limit_threads = prop.maxThreadsPerMultiProcessor / threads_per_block;
+
+    // 2. Shared Memory Limit 
+    int limit_shmem = prop.sharedMemPerMultiprocessor / shared_mem_per_block;
+
+    // 3. Register Limit
+    int regs_per_block = threads_per_block * regs_per_thread;
+    int limit_regs = prop.regsPerMultiprocessor / regs_per_block;
+    printf("Limit threads: %d, Limit shmem: %d, Limit regs: %d\n", limit_threads, limit_shmem, limit_regs);
+
+    // Find the tightest hardware bottleneck per SM
+    int max_blocks_per_SM = std::min(limit_threads, std::min(limit_shmem, limit_regs));
+
+    // Multiply by total SMs to get total active blocks for the whole GPU grid
+    return max_blocks_per_SM * prop.multiProcessorCount;
+}
 
 class queue_server : public image_processing_server
 {
 private:
+    
     // TODO define queue server context (memory buffers, etc...)
 public:
     queue_server(int threads)
     {
+        // Calculate how many blocks can concurrently run based on the user-requested thread count
+        // 5120 bytes is our combined shared memory size, 32 is our register cap
+        int calculated_blocks = calculate_max_threadblocks(threads, 5120, 32);
+        printf("Calculated max threadblocks: %d\n", calculated_blocks);
+
         // TODO initialize host state
         // TODO launch GPU persistent kernel with given number of threads, and calculated number of threadblocks
     }
