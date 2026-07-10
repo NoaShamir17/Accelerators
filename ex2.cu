@@ -121,9 +121,9 @@ public:
             CUDA_CHECK(cudaStreamCreate(&streams[i]));
             is_occupied[i] = false;
 
-            CUDA_CHECK(cudaMalloc((void**) in_img_array[i], IMG_SIZE));
-            CUDA_CHECK(cudaMalloc((void**) out_img_array[i], IMG_SIZE));
-            CUDA_CHECK(cudaMalloc((void**) maps_array[i], TILE_COUNT * TILE_COUNT * 256));
+            CUDA_CHECK(cudaMalloc((void**) &in_img_array[i], IMG_SIZE));
+            CUDA_CHECK(cudaMalloc((void**) &out_img_array[i], IMG_SIZE));
+            CUDA_CHECK(cudaMalloc((void**) &maps_array[i], TILE_COUNT * TILE_COUNT * 256));
         }
 
 
@@ -149,9 +149,8 @@ public:
             if(is_occupied[stream] == false){
 
                 CUDA_CHECK(cudaMemcpyAsync(in_img_array[stream], img_in, IMG_SIZE, cudaMemcpyHostToDevice,streams[stream]));
-                CUDA_CHECK(cudaGetLastError());
                 process_image_kernel<<<1, NUM_THREADS,0,streams[stream]>>>(in_img_array[stream], out_img_array[stream], maps_array[stream]);
-                CUDA_CHECK(cudaGetLastError());
+                CUDA_CHECK(cudaMemcpyAsync(img_out, out_img_array[stream], IMG_SIZE, cudaMemcpyDeviceToHost,streams[stream]));
                 is_occupied[stream] = true;
                 img_id_array[stream] = img_id;
 
@@ -183,6 +182,7 @@ public:
                 return false;
             }
         }
+        return false;
     }
 };
 
