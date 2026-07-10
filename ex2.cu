@@ -65,21 +65,22 @@ void process_image(uchar *in, uchar *out, uchar* maps) {
     __shared__ int hist[TILE_COUNT*TILE_COUNT][256]; //shared for atomic add
     int *CDF;
 
+    int stride = blockDim.x / NUM_THREADS_PER_TILE;
     // IMG_WIDTH=128 / TILE_WIDTH=64 - > 2 tiles per row, 2 tiles per column, 4 tiles in total
     // 256 thread per tile, 4 tiles in total -> 1024 threads per block
-    int tile_idx = threadIdx.x / 256;
+    for (int tile_idx = threadIdx.x / NUM_THREADS_PER_TILE; tile_idx < TILE_COUNT * TILE_COUNT; tile_idx += stride) {
 
-    int tile_row = tile_idx / TILE_COUNT;
-    int tile_col = tile_idx % TILE_COUNT;
-    int tile_start_pixel_row = tile_row * TILE_WIDTH;
-    int tile_start_pixel_col = tile_col * TILE_WIDTH;
-    
-    build_histogram(hist[tile_idx], (uchar (*)[IMG_WIDTH])in, tile_start_pixel_row, tile_start_pixel_col);
-    CDF = hist[tile_idx];
-    prefix_sum(CDF, 256);
+        int tile_row = tile_idx / TILE_COUNT;
+        int tile_col = tile_idx % TILE_COUNT;
+        int tile_start_pixel_row = tile_row * TILE_WIDTH;
+        int tile_start_pixel_col = tile_col * TILE_WIDTH;
+        
+        build_histogram(hist[tile_idx], (uchar (*)[IMG_WIDTH])in, tile_start_pixel_row, tile_start_pixel_col);
+        CDF = hist[tile_idx];
+        prefix_sum(CDF, 256);
 
-    calc_m_v((uchar (*)[TILE_COUNT][256])maps, CDF, tile_row, tile_col);
-
+        calc_m_v((uchar (*)[TILE_COUNT][256])maps, CDF, tile_row, tile_col);
+    }
     
     
     interpolate_device(maps, in, out);
@@ -153,7 +154,8 @@ public:
                 CUDA_CHECK(cudaMemcpyAsync(img_out, out_img_array[stream], IMG_SIZE, cudaMemcpyDeviceToHost,streams[stream]));
                 is_occupied[stream] = true;
                 img_id_array[stream] = img_id;
-
+                
+                return true;
 
             }
             
@@ -166,6 +168,10 @@ public:
         // TODO query (don't block) streams for any completed requests.
         for (int i = 0; i < STREAM_COUNT; i++)
         {
+            if(is_occupied[next_checked_stream] == false){
+                next_checked_stream = (next_checked_stream + 1) % STREAM_COUNT;
+                continue;
+            }
             cudaError_t status = cudaStreamQuery(streams[next_checked_stream]); // TODO query diffrent stream each iteration
             switch (status) {
             case cudaSuccess:
