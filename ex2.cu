@@ -223,7 +223,68 @@ public:
 };
 
 // TODO implement a MPMC queue
+struct context{
+    uchar *in_img;
+    uchar *out_img;
+    uchar *maps;
+};
 
+class MPMC_ring_queue
+{
+private:
+    TTAS_lock producer_lock;
+    TTAS_lock consumer_lock;
+    cuda::atomic<int> head;
+    cuda::atomic<int> tail;
+    int capacity;
+    int *queue;
+
+public:
+    MPMC_ring_queue(int capacity) : capacity(capacity) {
+        queue = new int[capacity];
+        head.store(0, cuda::memory_order_relaxed);
+        tail.store(0, cuda::memory_order_relaxed);
+    }
+
+    ~MPMC_ring_queue() {
+        delete[] queue;
+    }
+
+    bool enqueue(){}
+
+    bool enqueue(int value) {
+        producer_lock.lock();
+        int current_tail = tail.load(cuda::memory_order_relaxed);
+        int next_tail = (current_tail + 1) % capacity;
+
+        if (next_tail == head.load(cuda::memory_order_acquire)) {
+            producer_lock.unlock();
+            return false; // Queue is full
+        }
+
+        queue[current_tail] = value;
+        tail.store(next_tail, cuda::memory_order_release);
+        producer_lock.unlock();
+        return true;
+    }
+
+    bool dequeue(int *value) {
+        consumer_lock.lock();
+        int current_head = head.load(cuda::memory_order_relaxed);
+
+        if (current_head == tail.load(cuda::memory_order_acquire)) {
+            consumer_lock.unlock();
+            return false; // Queue is empty
+        }
+
+        *value = queue[current_head];
+        head.store((current_head + 1) % capacity, cuda::memory_order_release);
+        consumer_lock.unlock();
+        return true;
+    }
+
+
+};
 
 // TODO implement the persistent kernel
 // TODO implement a function for calculating the threadblocks count
