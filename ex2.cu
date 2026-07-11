@@ -243,7 +243,7 @@ private:
     cuda::atomic<int, cuda::thread_scope_system> _head;
     cuda::atomic<int, cuda::thread_scope_system> _tail;
     int capacity; //we assume is a power of 2
-    struct context queue[];
+    struct context *queue;
 
 public:
     MPMC_ring_queue(int capacity) : capacity(capacity) {
@@ -325,17 +325,20 @@ public:
 __global__ void persistent_kernel(bool *terminate_flag, MPMC_ring_queue *CPU_to_GPU_queue,
                                      MPMC_ring_queue *GPU_to_CPU_queue, uchar** maps_array){
     __shared__ struct context ctx;
+    __shared__ bool dequeue_success;
     while(!*terminate_flag){
         if(threadIdx.x == 0){
             printf("Persistent kernel waiting for new image...\n");
-            if(!CPU_to_GPU_queue->GPU_dequeue(&ctx)){
-               continue;
-            }
-            printf("Persistent kernel received new image with ID: %d\n", ctx.img_id);
+            dequeue_success = CPU_to_GPU_queue->GPU_dequeue(&ctx);
+            
 
         }
 
         __syncthreads();
+
+        if(!dequeue_success){
+            continue;
+        }
 
         process_image(ctx.in_img, ctx.out_img, maps_array[blockIdx.x]);
 
@@ -346,6 +349,8 @@ __global__ void persistent_kernel(bool *terminate_flag, MPMC_ring_queue *CPU_to_
             printf("Attempting to enqueue result for image with ID: %d\n", ctx.img_id);
             while(!GPU_to_CPU_queue->GPU_enqueue(ctx.img_id)){} //wait until we can enqueue the result
         }
+        
+        __syncthreads();
 
 
     }
