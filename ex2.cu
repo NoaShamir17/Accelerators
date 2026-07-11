@@ -327,9 +327,12 @@ __global__ void persistent_kernel(bool *terminate_flag, MPMC_ring_queue *CPU_to_
     __shared__ struct context ctx;
     while(!*terminate_flag){
         if(threadIdx.x == 0){
+            printf("Persistent kernel waiting for new image...\n");
             if(!CPU_to_GPU_queue->GPU_dequeue(&ctx)){
                continue;
             }
+            printf("Persistent kernel received new image with ID: %d\n", ctx.img_id);
+
         }
 
         __syncthreads();
@@ -339,6 +342,8 @@ __global__ void persistent_kernel(bool *terminate_flag, MPMC_ring_queue *CPU_to_
         __syncthreads();
 
         if(threadIdx.x == 0){
+            printf("GPU processed image with ID: %d\n", ctx.img_id);
+            printf("Attempting to enqueue result for image with ID: %d\n", ctx.img_id);
             while(!GPU_to_CPU_queue->GPU_enqueue(ctx.img_id)){} //wait until we can enqueue the result
         }
 
@@ -409,7 +414,8 @@ public:
 
         CUDA_CHECK(cudaMallocHost((void**)&terminate_flag, sizeof(bool)));
         *terminate_flag = false;
-
+        persistent_kernel<<<calculated_blocks, threads>>>(terminate_flag, CPU_to_GPU_queue, GPU_to_CPU_queue, maps_array);
+        printf("Queue server initialized with %d threads and %d threadblocks.\n", threads, calculated_blocks);
         // TODO launch GPU persistent kernel with given number of threads, and calculated number of threadblocks
     }
 
@@ -420,8 +426,8 @@ public:
         // TODO wait for the persistent kernel to finish
         CUDA_CHECK(cudaDeviceSynchronize());
         // TODO free resources allocated in constructor
-        delete CPU_to_GPU_queue;
-        delete GPU_to_CPU_queue;
+        CPU_to_GPU_queue->~MPMC_ring_queue();
+        GPU_to_CPU_queue->~MPMC_ring_queue();
         CUDA_CHECK(cudaFreeHost(CPU_to_GPU_queue));
         CUDA_CHECK(cudaFreeHost(GPU_to_CPU_queue));
         CUDA_CHECK(cudaFreeHost(terminate_flag));
@@ -430,13 +436,17 @@ public:
     bool enqueue(int img_id, uchar *img_in, uchar *img_out) override
     {
         // TODO push new task into queue if possible
-        return CPU_to_GPU_queue->CPU_enqueue(img_in, img_out, img_id);
+        bool res = CPU_to_GPU_queue->CPU_enqueue(img_in, img_out, img_id);
+        printf("Enqueued image with ID: %d res: %s\n", img_id, res ? "true" : "false");
+        return res;
     }
 
     bool dequeue(int *img_id) override
     {
         // TODO query (don't block) the producer-consumer queue for any responses.
-        return GPU_to_CPU_queue->CPU_dequeue(img_id);
+        bool res = GPU_to_CPU_queue->CPU_dequeue(img_id);
+        //printf("Dequeued image with ID: %d res: %s\n", *img_id, res ? "true" : "false");
+        return res;
     }
 };
 
