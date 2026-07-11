@@ -322,14 +322,17 @@ public:
 };
 
 // TODO implement the persistent kernel
-__global__ void persistent_kernel(bool *terminate_flag, MPMC_ring_queue *CPU_to_GPU_queue,
-                                     MPMC_ring_queue *GPU_to_CPU_queue, uchar** maps_array){
+__global__ void persistent_kernel(volatile bool *terminate_flag, MPMC_ring_queue *CPU_to_GPU_queue,
+                                     MPMC_ring_queue *GPU_to_CPU_queue, uchar* maps_array){
     __shared__ struct context ctx;
     __shared__ bool dequeue_success;
     while(!*terminate_flag){
         if(threadIdx.x == 0){
-            printf("Persistent kernel waiting for new image...\n");
+            
             dequeue_success = CPU_to_GPU_queue->GPU_dequeue(&ctx);
+            if(dequeue_success){
+                //printf("GPU dequeued image with ID: %d\n", ctx.img_id);
+            }
             
 
         }
@@ -340,14 +343,16 @@ __global__ void persistent_kernel(bool *terminate_flag, MPMC_ring_queue *CPU_to_
             continue;
         }
 
-        process_image(ctx.in_img, ctx.out_img, maps_array[blockIdx.x]);
+        process_image(ctx.in_img, ctx.out_img, maps_array + blockIdx.x * TILE_COUNT * TILE_COUNT * 256);
 
         __syncthreads();
 
         if(threadIdx.x == 0){
-            printf("GPU processed image with ID: %d\n", ctx.img_id);
-            printf("Attempting to enqueue result for image with ID: %d\n", ctx.img_id);
+            //printf("Attempting to enqueue result for image with ID: %d\n", ctx.img_id);
             while(!GPU_to_CPU_queue->GPU_enqueue(ctx.img_id)){} //wait until we can enqueue the result
+            //printf("GPU enqueued result for image with ID: %d\n", ctx.img_id);
+
+
         }
         
         __syncthreads();
@@ -390,11 +395,11 @@ private:
     //context
     //uchar **in_img_array;
     //uchar **out_img_array;
-    uchar **maps_array;
+    uchar *maps_array;
     
     MPMC_ring_queue *CPU_to_GPU_queue;
     MPMC_ring_queue *GPU_to_CPU_queue;
-    bool *terminate_flag;
+    volatile bool *terminate_flag;
 
 public:
     queue_server(int threads)
@@ -403,24 +408,33 @@ public:
         // 5120 bytes is our combined shared memory size, 32 is our register cap
         int calculated_blocks = calculate_max_threadblocks(threads, 5120, 32);
         printf("Calculated max threadblocks: %d\n", calculated_blocks);
-        int queue_size = std::pow(2.0, std::ceil(std::log(16.0 * calculated_blocks) / std::log(2.0)));
+        int queue_size = 1 << (int)(std::ceil(std::log(16.0 * calculated_blocks)));
         printf("Queue size (next power of 2): %d\n", queue_size);
 
 
         //allocate the context arrays in pinned memory
-        // CUDA_CHECK(cudaMallocHost((void**)&in_img_array, calculated_blocks * sizeof(uchar*)));
-        // CUDA_CHECK(cudaMallocHost((void**)&out_img_array, calculated_blocks * sizeof(uchar*)));
-        CUDA_CHECK(cudaMallocHost((void**)&maps_array, calculated_blocks * sizeof(uchar*)));
+        // CUDA_CHECK(cudaMalloc((void**)&in_img_array, calculated_blocks * sizeof(uchar*)));
+        // CUDA_CHECK(cudaMalloc((void**)&out_img_array, calculated_blocks * sizeof(uchar*)));
+        CUDA_CHECK(cudaMalloc((void**)&maps_array, calculated_blocks * TILE_COUNT * TILE_COUNT * 256 * sizeof(uchar)));
+
+        
+        printf("Allocated maps arrays in pinned memory.\n");
+
         //allocate the queues and the terminate flag in pinned memory
         CUDA_CHECK(cudaMallocHost((void**)&CPU_to_GPU_queue, sizeof(MPMC_ring_queue)));
         CUDA_CHECK(cudaMallocHost((void**)&GPU_to_CPU_queue, sizeof(MPMC_ring_queue)));
+        printf("Allocated queues in pinned memory.\n");
+
         new (CPU_to_GPU_queue) MPMC_ring_queue(queue_size);
         new (GPU_to_CPU_queue) MPMC_ring_queue(queue_size);
 
-        CUDA_CHECK(cudaMallocHost((void**)&terminate_flag, sizeof(bool)));
+        printf("Initialized queues with size: %d\n", queue_size);
+
+        CUDA_CHECK(cudaMallocHost((void**)&terminate_flag, sizeof(volatile bool)));
         *terminate_flag = false;
-        persistent_kernel<<<calculated_blocks, threads>>>(terminate_flag, CPU_to_GPU_queue, GPU_to_CPU_queue, maps_array);
         printf("Queue server initialized with %d threads and %d threadblocks.\n", threads, calculated_blocks);
+        persistent_kernel<<<calculated_blocks, threads>>>(terminate_flag, CPU_to_GPU_queue, GPU_to_CPU_queue, maps_array);
+        printf("Persistent kernel launched with %d threads and %d threadblocks.\n", threads, calculated_blocks);
         // TODO launch GPU persistent kernel with given number of threads, and calculated number of threadblocks
     }
 
@@ -435,7 +449,7 @@ public:
         GPU_to_CPU_queue->~MPMC_ring_queue();
         CUDA_CHECK(cudaFreeHost(CPU_to_GPU_queue));
         CUDA_CHECK(cudaFreeHost(GPU_to_CPU_queue));
-        CUDA_CHECK(cudaFreeHost(terminate_flag));
+        CUDA_CHECK(cudaFreeHost((void*)terminate_flag));
     }
 
     bool enqueue(int img_id, uchar *img_in, uchar *img_out) override
