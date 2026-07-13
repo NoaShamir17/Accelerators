@@ -323,9 +323,16 @@ public:
 
 // TODO implement the persistent kernel
 __global__ void persistent_kernel(volatile bool *terminate_flag, MPMC_ring_queue *CPU_to_GPU_queue,
-                                     MPMC_ring_queue *GPU_to_CPU_queue, uchar* maps_array){
+                                     MPMC_ring_queue *GPU_to_CPU_queue, uchar* maps_array,
+                                    uchar* d_in_array, uchar* d_out_array){
     __shared__ struct context ctx;
     __shared__ bool dequeue_success;
+
+    // Calculate this block's dedicated device memory pointers
+    uchar* my_d_in = d_in_array + (blockIdx.x * IMG_SIZE);
+    uchar* my_d_out = d_out_array + (blockIdx.x * IMG_SIZE);
+    uchar* my_maps = maps_array + (blockIdx.x * TILE_COUNT * TILE_COUNT * 256);
+
     while(!*terminate_flag){
         if(threadIdx.x == 0){
             
@@ -343,9 +350,19 @@ __global__ void persistent_kernel(volatile bool *terminate_flag, MPMC_ring_queue
             continue;
         }
 
-        process_image(ctx.in_img, ctx.out_img, maps_array + blockIdx.x * TILE_COUNT * TILE_COUNT * 256);
+        //COPY IN: Parallel fetch from Host to Device over PCIe
+        for (int i = threadIdx.x; i < IMG_SIZE; i += blockDim.x) {
+            my_d_in[i] = ctx.in_img[i];
+        }
+        __syncthreads(); // Wait for all threads to finish copying
 
+        process_image(my_d_in, my_d_out, my_maps); 
         __syncthreads();
+
+        // COPY OUT: Parallel push from Device to Host over PCIe
+        for (int i = threadIdx.x; i < IMG_SIZE; i += blockDim.x) {
+            ctx.out_img[i] = my_d_out[i];
+        }
 
         if(threadIdx.x == 0){
             //printf("Attempting to enqueue result for image with ID: %d\n", ctx.img_id);
@@ -393,8 +410,8 @@ private:
     // TODO define queue server context (memory buffers, etc...)
     
     //context
-    //uchar **in_img_array;
-    //uchar **out_img_array;
+    uchar *d_in_array;
+    uchar *d_out_array;
     uchar *maps_array;
     
     MPMC_ring_queue *CPU_to_GPU_queue;
@@ -413,8 +430,8 @@ public:
 
 
         //allocate the context arrays in pinned memory
-        // CUDA_CHECK(cudaMalloc((void**)&in_img_array, calculated_blocks * sizeof(uchar*)));
-        // CUDA_CHECK(cudaMalloc((void**)&out_img_array, calculated_blocks * sizeof(uchar*)));
+        CUDA_CHECK(cudaMalloc((void**)&d_in_array, calculated_blocks * IMG_SIZE * sizeof(uchar)));
+        CUDA_CHECK(cudaMalloc((void**)&d_out_array, calculated_blocks * IMG_SIZE * sizeof(uchar)));
         CUDA_CHECK(cudaMalloc((void**)&maps_array, calculated_blocks * TILE_COUNT * TILE_COUNT * 256 * sizeof(uchar)));
 
         
@@ -432,9 +449,9 @@ public:
 
         CUDA_CHECK(cudaMallocHost((void**)&terminate_flag, sizeof(volatile bool)));
         *terminate_flag = false;
-        printf("Queue server initialized with %d threads and %d threadblocks.\n", threads, calculated_blocks);
-        persistent_kernel<<<calculated_blocks, threads>>>(terminate_flag, CPU_to_GPU_queue, GPU_to_CPU_queue, maps_array);
-        printf("Persistent kernel launched with %d threads and %d threadblocks.\n", threads, calculated_blocks);
+        //printf("Queue server initialized with %d threads and %d threadblocks.\n", threads, calculated_blocks);
+        persistent_kernel<<<calculated_blocks, threads>>>(terminate_flag, CPU_to_GPU_queue, GPU_to_CPU_queue, maps_array, d_in_array, d_out_array);
+        //printf("Persistent kernel launched with %d threads and %d threadblocks.\n", threads, calculated_blocks);
         // TODO launch GPU persistent kernel with given number of threads, and calculated number of threadblocks
     }
 
@@ -456,7 +473,7 @@ public:
     {
         // TODO push new task into queue if possible
         bool res = CPU_to_GPU_queue->CPU_enqueue(img_in, img_out, img_id);
-        printf("Enqueued image with ID: %d res: %s\n", img_id, res ? "true" : "false");
+        //printf("Enqueued image with ID: %d res: %s\n", img_id, res ? "true" : "false");
         return res;
     }
 
