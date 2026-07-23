@@ -6,6 +6,7 @@
 #include <cuda/atomic>
 
 
+
 #define NUM_THREADS 1024
 #define NUM_THREADS_PER_TILE 256
 #define IMG_SIZE (IMG_HEIGHT * IMG_WIDTH)
@@ -92,11 +93,11 @@ void process_image(uchar *in, uchar *out, uchar* maps) {
     return; 
 }
 
-
 __global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar* maps)
 {
     process_image(all_in, all_out, maps);
 }
+
 
 
 // TODO implement a lock
@@ -223,9 +224,16 @@ public:
 
 // TODO implement the persistent kernel
 __global__ void persistent_kernel(volatile bool *terminate_flag, MPMC_ring_queue *CPU_to_GPU_queue,
-                                     MPMC_ring_queue *GPU_to_CPU_queue, uchar* maps_array){
+                                     MPMC_ring_queue *GPU_to_CPU_queue, uchar* maps_array,
+                                    uchar* d_in_array, uchar* d_out_array){
     __shared__ struct context ctx;
     __shared__ bool dequeue_success;
+
+    // Calculate this block's dedicated device memory pointers
+    uchar* my_d_in = d_in_array + (blockIdx.x * IMG_SIZE);
+    uchar* my_d_out = d_out_array + (blockIdx.x * IMG_SIZE);
+    uchar* my_maps = maps_array + (blockIdx.x * TILE_COUNT * TILE_COUNT * 256);
+
     while(!*terminate_flag){
         if(threadIdx.x == 0){
             
@@ -243,9 +251,19 @@ __global__ void persistent_kernel(volatile bool *terminate_flag, MPMC_ring_queue
             continue;
         }
 
-        process_image(ctx.in_img, ctx.out_img, maps_array + blockIdx.x * TILE_COUNT * TILE_COUNT * 256);
+        //COPY IN: Parallel fetch from Host to Device over PCIe
+        for (int i = threadIdx.x; i < IMG_SIZE; i += blockDim.x) {
+            my_d_in[i] = ctx.in_img[i];
+        }
+        __syncthreads(); // Wait for all threads to finish copying
 
+        process_image(my_d_in, my_d_out, my_maps); 
         __syncthreads();
+
+        // COPY OUT: Parallel push from Device to Host over PCIe
+        for (int i = threadIdx.x; i < IMG_SIZE; i += blockDim.x) {
+            ctx.out_img[i] = my_d_out[i];
+        }
 
         if(threadIdx.x == 0){
             //printf("Attempting to enqueue result for image with ID: %d\n", ctx.img_id);
@@ -293,8 +311,8 @@ private:
     // TODO define queue server context (memory buffers, etc...)
     
     //context
-    //uchar **in_img_array;
-    //uchar **out_img_array;
+    uchar *d_in_array;
+    uchar *d_out_array;
     uchar *maps_array;
     
     MPMC_ring_queue *CPU_to_GPU_queue;
@@ -307,34 +325,34 @@ public:
         // TODO initialize host state
         // 5120 bytes is our combined shared memory size, 32 is our register cap
         int calculated_blocks = calculate_max_threadblocks(threads, 5120, 32);
-        printf("Calculated max threadblocks: %d\n", calculated_blocks);
+        //printf("Calculated max threadblocks: %d\n", calculated_blocks);
         int queue_size = 1 << (int)(std::ceil(std::log(16.0 * calculated_blocks)));
-        printf("Queue size (next power of 2): %d\n", queue_size);
+        //printf("Queue size (next power of 2): %d\n", queue_size);
 
 
         //allocate the context arrays in pinned memory
-        // CUDA_CHECK(cudaMalloc((void**)&in_img_array, calculated_blocks * sizeof(uchar*)));
-        // CUDA_CHECK(cudaMalloc((void**)&out_img_array, calculated_blocks * sizeof(uchar*)));
+        CUDA_CHECK(cudaMalloc((void**)&d_in_array, calculated_blocks * IMG_SIZE * sizeof(uchar)));
+        CUDA_CHECK(cudaMalloc((void**)&d_out_array, calculated_blocks * IMG_SIZE * sizeof(uchar)));
         CUDA_CHECK(cudaMalloc((void**)&maps_array, calculated_blocks * TILE_COUNT * TILE_COUNT * 256 * sizeof(uchar)));
 
         
-        printf("Allocated maps arrays in pinned memory.\n");
+        //printf("Allocated maps arrays in pinned memory.\n");
 
         //allocate the queues and the terminate flag in pinned memory
         CUDA_CHECK(cudaMallocHost((void**)&CPU_to_GPU_queue, sizeof(MPMC_ring_queue)));
         CUDA_CHECK(cudaMallocHost((void**)&GPU_to_CPU_queue, sizeof(MPMC_ring_queue)));
-        printf("Allocated queues in pinned memory.\n");
+        //printf("Allocated queues in pinned memory.\n");
 
         new (CPU_to_GPU_queue) MPMC_ring_queue(queue_size);
         new (GPU_to_CPU_queue) MPMC_ring_queue(queue_size);
 
-        printf("Initialized queues with size: %d\n", queue_size);
+        //printf("Initialized queues with size: %d\n", queue_size);
 
         CUDA_CHECK(cudaMallocHost((void**)&terminate_flag, sizeof(volatile bool)));
         *terminate_flag = false;
-        printf("Queue server initialized with %d threads and %d threadblocks.\n", threads, calculated_blocks);
-        persistent_kernel<<<calculated_blocks, threads>>>(terminate_flag, CPU_to_GPU_queue, GPU_to_CPU_queue, maps_array);
-        printf("Persistent kernel launched with %d threads and %d threadblocks.\n", threads, calculated_blocks);
+        //printf("Queue server initialized with %d threads and %d threadblocks.\n", threads, calculated_blocks);
+        persistent_kernel<<<calculated_blocks, threads>>>(terminate_flag, CPU_to_GPU_queue, GPU_to_CPU_queue, maps_array, d_in_array, d_out_array);
+        //printf("Persistent kernel launched with %d threads and %d threadblocks.\n", threads, calculated_blocks);
         // TODO launch GPU persistent kernel with given number of threads, and calculated number of threadblocks
     }
 
@@ -368,7 +386,6 @@ public:
         return res;
     }
 };
-
 
 std::unique_ptr<queue_server> create_queues_server(int threads)
 {
