@@ -219,7 +219,16 @@ public:
         return true;
     }
 
-
+    /* ---- ex3 additions: read-only accessors, no queue logic is affected ----
+     * ex3.cu needs to know *where* this queue lives in host memory so that it
+     * can hand those addresses to the NIC (ibv_reg_mr) and let a remote client
+     * drive this very same queue over RDMA. These accessors only report
+     * addresses/sizes; none of them reads or modifies _head/_tail/queue. */
+    __host__ void *head_addr()  { return (void *)&_head; }
+    __host__ void *tail_addr()  { return (void *)&_tail; }
+    __host__ void *slots_addr() { return (void *)queue; }
+    __host__ size_t slots_bytes() const { return (size_t)capacity * sizeof(struct context); }
+    __host__ int get_capacity() const { return capacity; }
 };
 
 // TODO implement the persistent kernel
@@ -385,6 +394,12 @@ public:
         //printf("Dequeued image with ID: %d res: %s\n", *img_id, res ? "true" : "false");
         return res;
     }
+
+    /* ---- ex3 additions: read-only accessors, no server logic is affected ----
+     * Let ex3.cu reach the two queues so it can register their host memory with
+     * the NIC and expose them to a remote client. */
+    MPMC_ring_queue *cpu_to_gpu_queue() { return CPU_to_GPU_queue; }
+    MPMC_ring_queue *gpu_to_cpu_queue() { return GPU_to_CPU_queue; }
 };
 
 std::unique_ptr<queue_server> create_queues_server(int threads)
