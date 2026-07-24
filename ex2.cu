@@ -273,6 +273,7 @@ __global__ void persistent_kernel(volatile bool *terminate_flag, MPMC_ring_queue
         for (int i = threadIdx.x; i < IMG_SIZE; i += blockDim.x) {
             ctx.out_img[i] = my_d_out[i];
         }
+        __syncthreads();
 
         if(threadIdx.x == 0){
             //printf("Attempting to enqueue result for image with ID: %d\n", ctx.img_id);
@@ -335,7 +336,7 @@ public:
         // 5120 bytes is our combined shared memory size, 32 is our register cap
         int calculated_blocks = calculate_max_threadblocks(threads, 5120, 32);
         //printf("Calculated max threadblocks: %d\n", calculated_blocks);
-        int queue_size = 1 << (int)(std::ceil(std::log(16.0 * calculated_blocks)));
+        int queue_size = 1 << (int)(std::ceil(std::log2(16.0 * calculated_blocks)));
         //printf("Queue size (next power of 2): %d\n", queue_size);
 
 
